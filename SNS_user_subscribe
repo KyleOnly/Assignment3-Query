@@ -1,0 +1,74 @@
+import json
+import boto3
+from urllib.parse import urlparse
+from boto3.dynamodb.conditions import Attr
+
+# 初始化boto3客户端和资源
+sns_client = boto3.client('sns')
+s3_client = boto3.client("s3")
+database = boto3.resource('dynamodb')
+user_table = database.Table('User')
+SNS_TOPIC_ARN = 'arn:aws:sns:us-east-1:659221035837:UserSubsribe'  # 替换为你的SNS主题ARN
+
+def lambda_handler(event, context):
+    try:
+        # 解析输入的body
+        body = json.loads(event['body'])
+        user_email = body['user_mail']
+        new_tags = body['subscribe_tags']
+        
+        # 查询DynamoDB中的用户记录
+        response = user_table.scan(FilterExpression=Attr('user_mail').eq(user_email))
+        items = response['Items']
+        
+        if not items:
+            return {
+                'statusCode': 404,
+                'body': json.dumps({'error': 'User not found'})
+            }
+        
+        user_item = items[0]
+        current_tags = user_item.get('subscribe_tags', [])
+
+        # 合并新标签和现有标签，并确保唯一性
+        updated_tags = list(set(current_tags + new_tags))
+        print(new_tags)
+        print(current_tags)
+        print(updated_tags)
+        
+        # 更新DynamoDB中的订阅标签
+        user_table.update_item(
+            Key={'user_mail': user_email},
+            UpdateExpression='SET subscribe_tags = :tags',
+            ExpressionAttributeValues={':tags': updated_tags}
+        )
+        if not current_tags:
+            sns_client.subscribe(
+                TopicArn=SNS_TOPIC_ARN,
+                Protocol='email',
+                Endpoint=user_email
+            )
+
+        response_message = {'message': 'Subscription updated successfully'}
+
+        return {
+            'statusCode': 200,
+            'headers': {
+                'Access-Control-Allow-Headers': '*',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': '*'
+            },
+            'body': json.dumps(response_message)
+        }
+    
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return {
+            'statusCode': 200,
+            'headers': {
+                'Access-Control-Allow-Headers': '*',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': '*'
+            },
+            'body': json.dumps({'error': str(e)})
+        }
