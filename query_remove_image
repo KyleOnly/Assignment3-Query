@@ -1,0 +1,107 @@
+import json
+import boto3
+from urllib.parse import urlparse
+
+s3_client = boto3.client("s3")
+database = boto3.resource('dynamodb')
+table = database.Table('image_detection')  # Your DynamoDB table
+user_table = database.Table('User')
+
+def process_url(userURL):
+    username = userURL.split('/')[-1].split('_')[0]
+    
+    # For image_detection
+    try:
+        response = table.scan(
+            FilterExpression='thumbnail_url = :url',
+            ExpressionAttributeValues={
+                ':url': userURL
+            }
+        )
+        items = response['Items']
+        if items:
+            print('This image exists in the image_detection table')
+            for item in items:
+                # Delete each item using its primary key
+                table.delete_item(Key={'id': item['id']})  # Replace 'id' with the actual primary key attribute name
+            print("Item(s) deleted")
+        else:
+            print("This image does not exist in the image_detection")
+    except Exception as e:
+        print(f"Error accessing DynamoDB: {str(e)}")
+    
+    # For User table
+    try:
+        response = user_table.scan(
+            FilterExpression='username = :username',
+            ExpressionAttributeValues={
+                ':username': username
+            }
+        )
+        user_items = response['Items']
+        if user_items:
+            print(f'This image exists for user {username} in the User table')
+            parsed_url = urlparse(userURL)
+            userURL = parsed_url.path.lstrip('/')
+            userURLimage = 'https://imagebucket-groupa.s3.amazonaws.com/' + userURL
+            userURLimage = userURLimage.replace("thumbnail/", "images/").replace("_thumbnail", "")
+
+            userURLthumbnaill = 'https://imagebucket-groupa.s3.amazonaws.com/' + userURL
+            
+            print(f"Image URL: {userURLimage}")
+            print(f"Thumbnail URL: {userURLthumbnaill}")
+            
+            for user_item in user_items:
+                # Remove the URL from image_url and thumbnail_url lists
+                updated_thumbnail_urls = [url for url in user_item['thumbnail_url'] if url != userURLthumbnaill]
+                updated_image_urls = [url for url in user_item['image_url'] if url != userURLimage]
+                
+                print(f"Updated thumbnail URLs for {user_item['username']}: {updated_thumbnail_urls}")
+                print(f"Updated image URLs for {user_item['username']}: {updated_image_urls}")
+                
+                # Update the User table with the new lists
+                user_table.update_item(
+                    Key={'user_mail': user_item['user_mail']},  # Use 'user_mail' as the key
+                    UpdateExpression="SET image_url = :image_urls, thumbnail_url = :thumbnail_urls",
+                    ExpressionAttributeValues={
+                        ':image_urls': updated_image_urls,
+                        ':thumbnail_urls': updated_thumbnail_urls
+                    }
+                )
+                print(f"Updated user {user_item['username']}")
+        else:
+            print(f"No records found for user {username} in the User table")
+    except Exception as e:
+        print(f"Error accessing User table: {str(e)}")
+        
+    # For Amazon S3
+    parsed_url = urlparse(userURL)
+    userURL = parsed_url.path.lstrip('/')
+    userURLOri = userURL.replace("_thumbnail", "")
+    userURLOri = userURLOri.replace("thumbnail/", "images/")
+    # List of S3 object keys to delete (this would be provided or pre-determined)
+    s3_objects_to_delete = [userURL, userURLOri]
+    bucket = 'imagebucket-groupa'
+    try:
+        for s3_object_key in s3_objects_to_delete:
+            s3_client.delete_object(Bucket=bucket, Key=s3_object_key)
+            print(f"Deleted S3 object: {s3_object_key}")
+    except Exception as e:
+        print(f"Error deleting objects from S3: {str(e)}")
+
+def lambda_handler(event, context):
+    body = json.loads(event['body'])
+    url_list = body['url']  # Expect a list of URLs
+    
+    for userURL in url_list:
+        process_url(userURL)
+
+    return {
+        'statusCode': 200,
+        'headers': {
+            'Access-Control-Allow-Headers': '*',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': '*'
+        },
+        'body': json.dumps("Remove completed")
+    }
