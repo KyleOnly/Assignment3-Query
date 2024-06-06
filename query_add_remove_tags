@@ -1,0 +1,63 @@
+import json
+import boto3
+from boto3.dynamodb.conditions import Attr
+
+def lambda_handler(event, context):
+    body = json.loads(event['body'])
+    urls = body['url']
+    operation_type = body['type']
+    tags_to_update = body['tags']
+
+    # Ensure tags_to_update is always a list of strings, not lists
+    if isinstance(tags_to_update, str):
+        tags_to_update = [tags_to_update]
+
+    dynamodb = boto3.resource('dynamodb')
+    table = dynamodb.Table('image_detection')
+    responses = []
+    current_tags = []
+
+    for url in urls:
+        try:
+            response = table.scan(FilterExpression=Attr('image_url').eq(url))
+            items = response.get('Items', [])
+            if items:
+                for item in items:
+                    # Reset current_tags for each item to avoid mixing tags from different items
+                    
+                    # Correctly extract individual tags from each item
+                    if 'tags' in item:
+                        for tag in item["tags"]:
+                            current_tags.append(tag)
+
+                    if operation_type == 1:  # Add tags
+                        # Combine current tags with new tags and remove duplicates
+                        updated_tags = list(set(current_tags + tags_to_update))
+                    elif operation_type == 0:  # Remove tags
+                        # Filter out tags that need to be removed
+                        updated_tags = [tag for tag in current_tags if tag not in tags_to_update]
+
+                    # Update DynamoDB item with new tags
+                    table.update_item(
+                        Key={'id': item['id']},
+                        UpdateExpression='SET tags = :val',
+                        ExpressionAttributeValues={':val': updated_tags}
+                    )
+                responses.append(f"Successfully updated tags for {url}")
+            else:
+                responses.append(f"No item found for URL: {url}")
+        except Exception as e:
+            responses.append({
+                'url': url,
+                'error': str(e)
+            })
+
+    return {
+        'statusCode': 200,
+        'headers': {
+                'Access-Control-Allow-Headers': '*',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': '*'
+            },
+        'body': json.dumps(responses)
+    }
